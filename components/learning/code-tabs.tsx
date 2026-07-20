@@ -11,6 +11,8 @@ export interface CodeTab {
 export function CodeTabs({ tabs }: { tabs: CodeTab[] }) {
   const [active, setActive] = useState(0);
   const current = tabs[active];
+  const tabId = (i: number) => `code-tab-${i}`;
+  const panelId = (i: number) => `code-tabpanel-${i}`;
 
   return (
     <div className="not-prose my-6 overflow-hidden rounded-xl border border-border bg-surface-2">
@@ -18,8 +20,10 @@ export function CodeTabs({ tabs }: { tabs: CodeTab[] }) {
         {tabs.map((tab, i) => (
           <button
             key={tab.label}
+            id={tabId(i)}
             role="tab"
             aria-selected={i === active}
+            aria-controls={panelId(i)}
             onClick={() => setActive(i)}
             className={
               "rounded-t-md px-3 py-1.5 text-sm font-medium transition " +
@@ -32,7 +36,12 @@ export function CodeTabs({ tabs }: { tabs: CodeTab[] }) {
           </button>
         ))}
       </div>
-      <pre className="overflow-x-auto p-4 text-sm leading-relaxed">
+      <pre
+        id={panelId(active)}
+        role="tabpanel"
+        aria-labelledby={tabId(active)}
+        className="overflow-x-auto p-4 text-sm leading-relaxed"
+      >
         <code data-language={current.language} className="font-mono">
           {current.code}
         </code>

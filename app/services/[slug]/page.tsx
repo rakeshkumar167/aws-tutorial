@@ -11,6 +11,16 @@ const content: Record<string, ComponentType> = {
   iam: IamContent,
 };
 
+// Fail the build loudly if a registered service has no renderable MDX component,
+// rather than silently 404ing a service the catalog advertises as available.
+for (const slug of Object.keys(serviceMetas)) {
+  if (!content[slug]) {
+    throw new Error(
+      `Service "${slug}" has registry metadata but no MDX component in the content map (app/services/[slug]/page.tsx).`,
+    );
+  }
+}
+
 export function generateStaticParams() {
   return Object.values(serviceMetas).map((m) => ({ slug: m.slug }));
 }
