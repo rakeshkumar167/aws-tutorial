@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (the `.dark` class is toggled on <html>). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --canvas: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f4f2ec;
+  --ink: #16191f;
+  --ink-muted: #545b64;
+  --ink-faint: #879196;
+  --border: #e6e3da;
+  --border-strong: #d6d2c6;
+
+  --accent: #ec7211;        /* AWS "console" orange */
+  --accent-soft: #fdefe1;
+  --accent-ink: #b4560a;
+
+  --success: #15803d;
+  --success-soft: #e7f4ec;
+  --warning: #b45309;
+  --warning-soft: #fbf0e1;
+  --danger: #b91c1c;
+  --danger-soft: #fbeaea;
+
+  --shadow-sm: 0 1px 2px rgba(22, 25, 31, 0.05);
+  --shadow-md: 0 6px 24px -12px rgba(22, 25, 31, 0.2);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-mono-jb), ui-monospace, "SF Mono", "Cascadia Code", monospace;
+}
+
+.dark {
+  --canvas: #0d0e11;
+  --surface: #15171c;
+  --surface-2: #1c1f26;
+  --ink: #e9eaee;
+  --ink-muted: #a0a5b1;
+  --ink-faint: #6f7480;
+  --border: #262a33;
+  --border-strong: #353a45;
+
+  --accent: #ff9900;        /* AWS marketing orange, brighter on dark */
+  --accent-soft: #2a1e0c;
+  --accent-ink: #ffb84d;
+
+  --success-soft: #10241a;
+  --warning-soft: #241a0c;
+  --danger-soft: #241012;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.5rem 1rem;
+  z-index: 50;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
