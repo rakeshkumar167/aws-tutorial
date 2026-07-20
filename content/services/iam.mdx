@@ -1,31 +1,253 @@
 <h2 id="overview">Overview</h2>
 
-Placeholder — full content authored in the next task.
+AWS Identity and Access Management (IAM) is the control plane for **who can do
+what** in an AWS account. Every request to an AWS API — from the console, the
+CLI, an SDK, or another service — is authenticated to a *principal* and then
+authorized against IAM policies before it is allowed to run. IAM is a **global**
+service (not region-scoped) and is **free**: you pay for the resources your
+identities use, not for IAM itself.
+
+The single most important habit IAM teaches is **least privilege**: grant only
+the permissions a principal actually needs, and prefer short-lived credentials
+(roles) over long-lived ones (access keys).
+
+<Callout variant="warning" title="Protect the root user">
+The account **root user** can do anything and cannot be restricted by IAM
+policies. Never use it for day-to-day work, enable MFA on it, and create
+individual IAM identities (or better, federated identities) instead.
+</Callout>
 
 <h2 id="core-concepts">Core Concepts</h2>
 
-Placeholder.
+<div className="not-prose my-6 grid gap-3 sm:grid-cols-2">
+  <ConceptCard term="Principal">An entity that makes a request — an IAM user, an assumed role session, or an AWS service acting on your behalf.</ConceptCard>
+  <ConceptCard term="User / Group">A long-lived identity for a human or app; groups bundle users so policies attach once.</ConceptCard>
+  <ConceptCard term="Role">An identity with no long-term credentials that principals *assume* to get temporary credentials via STS.</ConceptCard>
+  <ConceptCard term="Policy">A JSON document of permission statements (Effect, Action, Resource, Condition) attached to identities or resources.</ConceptCard>
+</div>
+
+Policies come in several kinds: **identity-based** (attached to users/roles),
+**resource-based** (attached to a resource such as an S3 bucket or SQS queue and
+naming a principal), **permissions boundaries** (a ceiling on what an identity
+*can* be granted), and **Service Control Policies** (org-wide guardrails). Every
+resource and principal is named by an **ARN**
+(`arn:aws:service:region:account-id:resource`).
+
+<Diagram caption="How the IAM pieces relate">
+  <pre className="font-mono text-xs">{`Principal ──assumes──▶ Role ──has──▶ Policies ──allow/deny──▶ Actions on Resources
+   │                                    ▲
+   └── User/Group ──attaches───────────┘`}</pre>
+</Diagram>
 
 <h2 id="how-it-works">How It Works</h2>
 
-Placeholder.
+When a principal calls an AWS API, IAM evaluates **all** applicable policies and
+reduces them to a single allow/deny using this logic:
+
+1. Start from an implicit **deny** (nothing is allowed by default).
+2. If **any** applicable policy has an explicit **Deny** that matches, the
+   request is denied — an explicit deny always wins.
+3. Otherwise, the request is allowed only if **some** policy has an explicit
+   **Allow** that matches the action, resource, and conditions.
+4. If neither matches, the implicit deny stands.
+
+Additional gates apply for organizations (SCPs), permissions boundaries, and
+session policies — the effective permission is the **intersection** of all of
+them. This is why an `Allow` alone isn't always enough: a boundary or SCP can
+still block it.
+
+<Callout variant="info" title="Explicit deny beats everything">
+Order of precedence: **explicit Deny → explicit Allow → implicit Deny**. Use
+explicit denies sparingly but decisively for guardrails you never want bypassed.
+</Callout>
 
 <h2 id="hands-on">Hands-on</h2>
 
-Placeholder.
+The task below creates an IAM **role** that a Lambda function can assume, then
+attaches a **least-privilege policy** granting read-only access to one S3
+bucket. The same task is shown across the AWS CLI, the AWS SDK for JavaScript v3
+(TypeScript), the AWS SDK for Python (boto3), and CloudFormation.
+
+<CodeTabs tabs={[
+  {
+    label: "AWS CLI",
+    language: "bash",
+    code: `# 1. Create the role with a trust policy allowing Lambda to assume it
+aws iam create-role \\
+  --role-name demo-reader \\
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": { "Service": "lambda.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+# 2. Attach a least-privilege inline policy: read one bucket only
+aws iam put-role-policy \\
+  --role-name demo-reader \\
+  --policy-name read-demo-bucket \\
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::demo-bucket/*"
+    }]
+  }'`
+  },
+  {
+    label: "TypeScript (SDK v3)",
+    language: "ts",
+    code: `import {
+  IAMClient,
+  CreateRoleCommand,
+  PutRolePolicyCommand,
+} from "@aws-sdk/client-iam";
+
+const iam = new IAMClient({ region: "us-east-1" });
+
+const trustPolicy = {
+  Version: "2012-10-17",
+  Statement: [{
+    Effect: "Allow",
+    Principal: { Service: "lambda.amazonaws.com" },
+    Action: "sts:AssumeRole",
+  }],
+};
+
+const permissionPolicy = {
+  Version: "2012-10-17",
+  Statement: [{
+    Effect: "Allow",
+    Action: ["s3:GetObject"],
+    Resource: "arn:aws:s3:::demo-bucket/*",
+  }],
+};
+
+await iam.send(new CreateRoleCommand({
+  RoleName: "demo-reader",
+  AssumeRolePolicyDocument: JSON.stringify(trustPolicy),
+}));
+
+await iam.send(new PutRolePolicyCommand({
+  RoleName: "demo-reader",
+  PolicyName: "read-demo-bucket",
+  PolicyDocument: JSON.stringify(permissionPolicy),
+}));`
+  },
+  {
+    label: "Python (boto3)",
+    language: "python",
+    code: `import json
+import boto3
+
+iam = boto3.client("iam")
+
+trust_policy = {
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"Service": "lambda.amazonaws.com"},
+        "Action": "sts:AssumeRole",
+    }],
+}
+
+permission_policy = {
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": ["s3:GetObject"],
+        "Resource": "arn:aws:s3:::demo-bucket/*",
+    }],
+}
+
+iam.create_role(
+    RoleName="demo-reader",
+    AssumeRolePolicyDocument=json.dumps(trust_policy),
+)
+
+iam.put_role_policy(
+    RoleName="demo-reader",
+    PolicyName="read-demo-bucket",
+    PolicyDocument=json.dumps(permission_policy),
+)`
+  },
+  {
+    label: "CloudFormation",
+    language: "yaml",
+    code: `Resources:
+  DemoReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: demo-reader
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: read-demo-bucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: arn:aws:s3:::demo-bucket/*`
+  }
+]} />
 
 <h2 id="common-patterns">Common Patterns</h2>
 
-Placeholder.
+- **Service roles.** Give an AWS service (Lambda, EC2, ECS task) a role whose
+  trust policy names that service. The service receives temporary credentials
+  automatically — no keys to manage.
+- **Cross-account access.** Let account B assume a role in account A: A's role
+  trust policy names B's account/role as the principal, and the caller runs
+  `sts:AssumeRole`. Add an `ExternalId` condition to defend against the
+  confused-deputy problem.
+- **Least-privilege policies.** Start from the specific actions and resource
+  ARNs you need, then widen only when a real call fails. Use IAM Access Analyzer
+  to generate policies from observed CloudTrail activity.
 
 <h2 id="pitfalls-best-practices">Pitfalls & Best Practices</h2>
 
-Placeholder.
+- **Avoid wildcards** like `"Action": "*"` or `"Resource": "*"` except where
+  genuinely required; they are the most common source of over-permissioning.
+- **Prefer roles over access keys.** Long-lived access keys leak and rarely get
+  rotated; roles hand out short-lived credentials automatically.
+- **Scope with conditions** (`aws:SourceArn`, `aws:PrincipalOrgID`, `ExternalId`)
+  to prevent confused-deputy and cross-tenant access.
+- **Turn on MFA**, rotate any remaining credentials, and review access with IAM
+  Access Analyzer and CloudTrail.
 
 <h2 id="pricing-limits">Pricing & Limits</h2>
 
-Placeholder.
+IAM itself is **free** — there is no charge for users, roles, groups, or
+policies. You pay only for the AWS resources your principals use. Be aware of
+soft limits (raiseable via Service Quotas): a default of 5,000 users and 1,000
+roles per account, up to 10 managed policies attached per identity, and a
+6,144-character size limit on a managed policy document. STS temporary
+credentials last from 15 minutes up to a role's configured maximum (up to 12
+hours).
 
 <h2 id="knowledge-checks">Knowledge Checks & FAQ</h2>
 
-Placeholder.
+**What wins, an explicit allow or an explicit deny?** An explicit **deny**
+always wins. Evaluation is: explicit deny → explicit allow → implicit deny.
+
+**When should I use a role instead of a user?** Whenever the workload can obtain
+credentials by assuming a role — AWS services, cross-account access, and
+federated humans should all use roles. Reserve IAM users for the rare cases that
+genuinely need long-lived keys.
+
+**Is IAM regional?** No. IAM is global; identities and policies are the same
+across all regions.
+
+**What's the difference between identity-based and resource-based policies?**
+Identity-based policies attach to a principal and say what it may do;
+resource-based policies attach to a resource and say which principals may act on
+it. A cross-account call typically needs an allow on *both* sides.
