@@ -1,0 +1,400 @@
+<h2 id="overview">Overview</h2>
+
+Amazon **Virtual Private Cloud (VPC)** is your own logically isolated network
+inside AWS. You choose a private IP range, carve it into **subnets**, and control
+exactly how traffic flows in, out, and between resources with **route tables**,
+**gateways**, **security groups**, and **network ACLs**. Almost everything you
+run — EC2 instances, load balancers, RDS databases, Lambda functions with
+private access — lives inside a VPC.
+
+A VPC is **regional**: it spans all the Availability Zones in one region, and its
+subnets each live in a single AZ. The VPC itself is **free** — you pay for the
+things that move or route traffic (NAT gateways, data transfer, some endpoints),
+not for the VPC, subnets, route tables, or security groups.
+
+<Callout variant="info" title="You already have a default VPC">
+Every account starts with a **default VPC** in each region — one public subnet
+per AZ, an internet gateway, and permissive routing — so instances get public IPs
+and work out of the box. It's fine for experiments, but for anything real you
+create a **custom VPC** so you control the CIDR, the public/private split, and
+what can reach the internet.
+</Callout>
+
+<h2 id="core-concepts">Core Concepts</h2>
+
+<div className="not-prose my-6 grid gap-3 sm:grid-cols-2">
+  <ConceptCard term="CIDR block">The VPC's private IP range, e.g. `10.0.0.0/16`. Pick from RFC 1918 space and size it so it won't overlap other networks you'll peer with.</ConceptCard>
+  <ConceptCard term="Subnet">A slice of the VPC CIDR bound to one AZ. It's *public* if its route table sends `0.0.0.0/0` to an internet gateway, otherwise *private*.</ConceptCard>
+  <ConceptCard term="Route table">A set of rules matching destination CIDRs to targets (local, IGW, NAT, peering). Each subnet is associated with exactly one route table.</ConceptCard>
+  <ConceptCard term="Gateway">An edge device: an **internet gateway (IGW)** for two-way internet, or a **NAT gateway** so private subnets can reach out without being reachable inbound.</ConceptCard>
+</div>
+
+Traffic is filtered at two layers. **Security groups** attach to an ENI (an
+instance's virtual network card), are **stateful** (return traffic is allowed
+automatically), and only have *allow* rules. **Network ACLs** attach to a whole
+subnet, are **stateless** (you must allow both directions), and support explicit
+*deny* rules. Every instance connects through an **elastic network interface
+(ENI)** that carries its private IP, security groups, and optional public IP.
+
+<Diagram caption="How the VPC pieces relate">
+  <pre className="font-mono text-xs">{`VPC 10.0.0.0/16
+ ├─ Public subnet 10.0.1.0/24 ──route 0.0.0.0/0──▶ Internet Gateway ◀──▶ Internet
+ │     └─ instance (ENI + Security Group)
+ └─ Private subnet 10.0.2.0/24 ──route 0.0.0.0/0──▶ NAT Gateway ──▶ (IGW) ──▶ Internet
+       └─ instance (ENI + Security Group)   outbound only`}</pre>
+</Diagram>
+
+<h2 id="how-it-works">How It Works</h2>
+
+Follow a packet leaving an instance. AWS looks at the subnet's **route table**
+and picks the **most specific** matching route:
+
+1. The `local` route (the VPC CIDR) always exists and can't be removed — it's how
+   subnets talk to each other. It always wins for in-VPC destinations.
+2. For internet-bound traffic (`0.0.0.0/0`), a **public** subnet routes to the
+   **internet gateway**; a **private** subnet routes to a **NAT gateway**, which
+   lives in a public subnet and does the outbound translation.
+3. The packet is then checked against the layered filters below before it leaves
+   or arrives.
+
+Filtering happens in a fixed order. Outbound: the instance's **security group**,
+then the subnet's **network ACL**. Inbound: the **network ACL** first, then the
+**security group**. Because security groups are stateful, an allowed request's
+reply comes back automatically; NACLs are stateless, so a reply needs an explicit
+rule (typically on the ephemeral port range 1024–65535).
+
+<Callout variant="info" title="Security group vs. network ACL">
+Reach for **security groups** first — they're stateful and easier to reason
+about. Use **network ACLs** as a coarse subnet-wide guardrail, especially when
+you need an explicit **deny** (e.g. block a bad IP range) that a security group
+can't express.
+</Callout>
+
+<h2 id="hands-on">Hands-on</h2>
+
+The task below builds a VPC with one **public** subnet (routed to an internet
+gateway) and one **private** subnet (routed out through a NAT gateway), plus a
+web-tier security group. The same task is shown across the AWS CLI, the AWS SDK
+for JavaScript v3 (TypeScript), the AWS SDK for Python (boto3), and
+CloudFormation.
+
+<CodeTabs tabs={[
+  {
+    label: "AWS CLI",
+    language: "bash",
+    code: `# 1. Create the VPC and an internet gateway
+VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 \\
+  --query Vpc.VpcId --output text)
+IGW_ID=$(aws ec2 create-internet-gateway \\
+  --query InternetGateway.InternetGatewayId --output text)
+aws ec2 attach-internet-gateway --vpc-id "$VPC_ID" --internet-gateway-id "$IGW_ID"
+
+# 2. Create public and private subnets (in the same AZ for this demo)
+PUB_SUBNET=$(aws ec2 create-subnet --vpc-id "$VPC_ID" \\
+  --cidr-block 10.0.1.0/24 --availability-zone us-east-1a \\
+  --query Subnet.SubnetId --output text)
+PRIV_SUBNET=$(aws ec2 create-subnet --vpc-id "$VPC_ID" \\
+  --cidr-block 10.0.2.0/24 --availability-zone us-east-1a \\
+  --query Subnet.SubnetId --output text)
+
+# 3. Public route table: 0.0.0.0/0 -> internet gateway
+PUB_RT=$(aws ec2 create-route-table --vpc-id "$VPC_ID" \\
+  --query RouteTable.RouteTableId --output text)
+aws ec2 create-route --route-table-id "$PUB_RT" \\
+  --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW_ID"
+aws ec2 associate-route-table --route-table-id "$PUB_RT" --subnet-id "$PUB_SUBNET"
+
+# 4. NAT gateway in the public subnet (needs an Elastic IP)
+EIP_ALLOC=$(aws ec2 allocate-address --domain vpc \\
+  --query AllocationId --output text)
+NAT_ID=$(aws ec2 create-nat-gateway --subnet-id "$PUB_SUBNET" \\
+  --allocation-id "$EIP_ALLOC" --query NatGateway.NatGatewayId --output text)
+aws ec2 wait nat-gateway-available --nat-gateway-ids "$NAT_ID"
+
+# 5. Private route table: 0.0.0.0/0 -> NAT gateway
+PRIV_RT=$(aws ec2 create-route-table --vpc-id "$VPC_ID" \\
+  --query RouteTable.RouteTableId --output text)
+aws ec2 create-route --route-table-id "$PRIV_RT" \\
+  --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT_ID"
+aws ec2 associate-route-table --route-table-id "$PRIV_RT" --subnet-id "$PRIV_SUBNET"
+
+# 6. Web security group: allow inbound HTTPS from anywhere
+SG_ID=$(aws ec2 create-security-group --vpc-id "$VPC_ID" \\
+  --group-name web-tier --description "Web tier" \\
+  --query GroupId --output text)
+aws ec2 authorize-security-group-ingress --group-id "$SG_ID" \\
+  --protocol tcp --port 443 --cidr 0.0.0.0/0`
+  },
+  {
+    label: "TypeScript (SDK v3)",
+    language: "ts",
+    code: `import {
+  EC2Client,
+  CreateVpcCommand,
+  CreateInternetGatewayCommand,
+  AttachInternetGatewayCommand,
+  CreateSubnetCommand,
+  CreateRouteTableCommand,
+  CreateRouteCommand,
+  AssociateRouteTableCommand,
+  AllocateAddressCommand,
+  CreateNatGatewayCommand,
+  CreateSecurityGroupCommand,
+  AuthorizeSecurityGroupIngressCommand,
+  waitUntilNatGatewayAvailable,
+} from "@aws-sdk/client-ec2";
+
+const ec2 = new EC2Client({ region: "us-east-1" });
+
+// 1. VPC + internet gateway
+const { Vpc } = await ec2.send(new CreateVpcCommand({ CidrBlock: "10.0.0.0/16" }));
+const vpcId = Vpc!.VpcId!;
+const { InternetGateway } = await ec2.send(new CreateInternetGatewayCommand({}));
+const igwId = InternetGateway!.InternetGatewayId!;
+await ec2.send(new AttachInternetGatewayCommand({ VpcId: vpcId, InternetGatewayId: igwId }));
+
+// 2. Public + private subnets
+const { Subnet: pub } = await ec2.send(new CreateSubnetCommand({
+  VpcId: vpcId, CidrBlock: "10.0.1.0/24", AvailabilityZone: "us-east-1a",
+}));
+const { Subnet: priv } = await ec2.send(new CreateSubnetCommand({
+  VpcId: vpcId, CidrBlock: "10.0.2.0/24", AvailabilityZone: "us-east-1a",
+}));
+
+// 3. Public route table -> IGW
+const { RouteTable: pubRt } = await ec2.send(new CreateRouteTableCommand({ VpcId: vpcId }));
+await ec2.send(new CreateRouteCommand({
+  RouteTableId: pubRt!.RouteTableId, DestinationCidrBlock: "0.0.0.0/0", GatewayId: igwId,
+}));
+await ec2.send(new AssociateRouteTableCommand({
+  RouteTableId: pubRt!.RouteTableId, SubnetId: pub!.SubnetId,
+}));
+
+// 4. NAT gateway (Elastic IP + wait until ready)
+const { AllocationId } = await ec2.send(new AllocateAddressCommand({ Domain: "vpc" }));
+const { NatGateway } = await ec2.send(new CreateNatGatewayCommand({
+  SubnetId: pub!.SubnetId, AllocationId,
+}));
+const natId = NatGateway!.NatGatewayId!;
+await waitUntilNatGatewayAvailable({ client: ec2, maxWaitTime: 300 }, { NatGatewayIds: [natId] });
+
+// 5. Private route table -> NAT
+const { RouteTable: privRt } = await ec2.send(new CreateRouteTableCommand({ VpcId: vpcId }));
+await ec2.send(new CreateRouteCommand({
+  RouteTableId: privRt!.RouteTableId, DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: natId,
+}));
+await ec2.send(new AssociateRouteTableCommand({
+  RouteTableId: privRt!.RouteTableId, SubnetId: priv!.SubnetId,
+}));
+
+// 6. Web security group: inbound HTTPS
+const { GroupId } = await ec2.send(new CreateSecurityGroupCommand({
+  VpcId: vpcId, GroupName: "web-tier", Description: "Web tier",
+}));
+await ec2.send(new AuthorizeSecurityGroupIngressCommand({
+  GroupId,
+  IpPermissions: [{
+    IpProtocol: "tcp", FromPort: 443, ToPort: 443,
+    IpRanges: [{ CidrIp: "0.0.0.0/0" }],
+  }],
+}));`
+  },
+  {
+    label: "Python (boto3)",
+    language: "python",
+    code: `import boto3
+
+ec2 = boto3.client("ec2", region_name="us-east-1")
+
+# 1. VPC + internet gateway
+vpc_id = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+ec2.attach_internet_gateway(VpcId=vpc_id, InternetGatewayId=igw_id)
+
+# 2. Public + private subnets
+pub = ec2.create_subnet(
+    VpcId=vpc_id, CidrBlock="10.0.1.0/24", AvailabilityZone="us-east-1a"
+)["Subnet"]["SubnetId"]
+priv = ec2.create_subnet(
+    VpcId=vpc_id, CidrBlock="10.0.2.0/24", AvailabilityZone="us-east-1a"
+)["Subnet"]["SubnetId"]
+
+# 3. Public route table -> IGW
+pub_rt = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+ec2.create_route(RouteTableId=pub_rt, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
+ec2.associate_route_table(RouteTableId=pub_rt, SubnetId=pub)
+
+# 4. NAT gateway (Elastic IP + wait until ready)
+alloc_id = ec2.allocate_address(Domain="vpc")["AllocationId"]
+nat_id = ec2.create_nat_gateway(SubnetId=pub, AllocationId=alloc_id)["NatGateway"]["NatGatewayId"]
+ec2.get_waiter("nat_gateway_available").wait(NatGatewayIds=[nat_id])
+
+# 5. Private route table -> NAT
+priv_rt = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+ec2.create_route(RouteTableId=priv_rt, DestinationCidrBlock="0.0.0.0/0", NatGatewayId=nat_id)
+ec2.associate_route_table(RouteTableId=priv_rt, SubnetId=priv)
+
+# 6. Web security group: inbound HTTPS
+sg_id = ec2.create_security_group(
+    VpcId=vpc_id, GroupName="web-tier", Description="Web tier"
+)["GroupId"]
+ec2.authorize_security_group_ingress(
+    GroupId=sg_id,
+    IpPermissions=[{
+        "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+        "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+    }],
+)`
+  },
+  {
+    label: "CloudFormation",
+    language: "yaml",
+    code: `Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+
+  Igw:
+    Type: AWS::EC2::InternetGateway
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref Igw
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: us-east-1a
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+  PublicAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupDescription: Web tier
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0`
+  }
+]} />
+
+<Callout variant="tip" title="Real deployments span AZs">
+This demo puts both subnets in one AZ to stay short. For anything
+production-facing, create a public **and** private subnet in **at least two AZs**
+and (for HA) a NAT gateway per AZ, so a single AZ failure doesn't take you down.
+</Callout>
+
+<h2 id="common-patterns">Common Patterns</h2>
+
+- **Public/private tiers.** Put load balancers and NAT gateways in public
+  subnets; put app servers and databases in private subnets that only reach the
+  internet outbound through NAT. This is the default shape for most web apps.
+- **VPC peering.** Connect two VPCs so resources route to each other over private
+  IPs. Peering is **non-transitive** (A↔B and B↔C does not give A↔C) and requires
+  non-overlapping CIDRs; use **Transit Gateway** when you have many VPCs.
+- **VPC endpoints.** Reach AWS services privately without a NAT gateway or the
+  public internet: **gateway endpoints** (free) for S3 and DynamoDB, **interface
+  endpoints** (hourly + per-GB) for most other services.
+- **Multi-AZ by default.** Spread subnets across AZs and let AWS place resources
+  in each; it's the cheapest insurance against a zonal outage.
+
+<h2 id="pitfalls-best-practices">Pitfalls & Best Practices</h2>
+
+- **Plan CIDRs so they never overlap.** Overlapping ranges make peering and VPN
+  connections impossible later. Reserve a large block per environment up front.
+- **Never put databases in a public subnet.** Keep data tiers private and expose
+  only what must be reachable (usually just the load balancer).
+- **Watch NAT gateway cost.** NAT gateways bill per hour **and** per GB — a busy
+  private subnet can run up real charges. Use gateway VPC endpoints for S3/DynamoDB
+  traffic to bypass NAT.
+- **Don't confuse SGs and NACLs.** Security groups are stateful and instance-level;
+  NACLs are stateless and subnet-level. A "return traffic blocked" mystery is
+  almost always a missing ephemeral-port NACL rule.
+- **Remember reserved IPs.** AWS reserves **5 addresses** in every subnet (network,
+  VPC router, DNS, future use, broadcast), so a `/24` gives you 251 usable hosts,
+  not 256.
+
+<h2 id="pricing-limits">Pricing & Limits</h2>
+
+The VPC and its core objects — subnets, route tables, internet gateways, security
+groups, and NACLs — are **free**. You pay for **NAT gateways** (an hourly charge
+plus per-GB processing), **interface VPC endpoints** (hourly + per-GB), Elastic IPs
+in some cases, and **data transfer** (notably cross-AZ and internet egress).
+Common default quotas (raiseable via Service Quotas): **5 VPCs per region**, **200
+subnets per VPC**, **5 IPv4 CIDR blocks per VPC**, and **500 security groups per
+VPC** with **60 inbound/60 outbound rules** each. A VPC CIDR must be between **/16
+and /28**.
+
+<h2 id="knowledge-checks">Knowledge Checks & FAQ</h2>
+
+**What makes a subnet public vs. private?** Only its route table. A subnet is
+public when it has a `0.0.0.0/0` route to an **internet gateway**; without that
+route (typically routing to a NAT gateway instead) it's private. Subnets aren't
+"public" by a flag — it's all in the routing.
+
+**Security group or network ACL — which should I use?** Prefer **security
+groups** (stateful, instance-level, allow-only) for almost everything. Add
+**network ACLs** as a subnet-wide guardrail when you need an explicit **deny**.
+
+**Why do I need a NAT gateway?** So instances in a **private** subnet can make
+**outbound** connections (updates, API calls) without being reachable from the
+internet inbound. The NAT gateway sits in a public subnet and translates the
+outbound traffic.
+
+**Is a VPC regional or zonal?** The **VPC is regional** (it spans every AZ in the
+region); each **subnet is zonal** (it lives in exactly one AZ). Spread subnets
+across AZs for high availability.

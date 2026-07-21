@@ -37,7 +37,12 @@ export const catalog: readonly ServiceCategory[] = [
     title: "Networking & Content Delivery",
     summary: "Connect, route, and deliver traffic to your workloads.",
     services: [
-      soon("vpc", "VPC", "Subnets, routing, security groups"),
+      {
+        slug: "vpc",
+        title: "VPC",
+        blurb: "Subnets, routing, security groups",
+        status: "available",
+      },
       soon("route-53", "Route 53", "DNS, routing policies"),
       soon("cloudfront", "CloudFront", "CDN, edge caching"),
       soon("api-gateway", "API Gateway", "REST/HTTP APIs, throttling"),

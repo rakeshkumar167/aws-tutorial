@@ -26,4 +26,23 @@ export const serviceMetas: Record<string, ServiceMeta> = {
       { id: "knowledge-checks", label: "Knowledge Checks & FAQ" },
     ],
   },
+  vpc: {
+    slug: "vpc",
+    categorySlug: "networking",
+    title: "Amazon VPC",
+    description:
+      "Your isolated network in AWS: CIDR blocks, public and private subnets, route tables, internet and NAT gateways, security groups vs. network ACLs, and hands-on syntax for building a two-tier VPC.",
+    readingMinutes: 25,
+    concepts: ["CIDR & subnets", "Route tables & gateways", "Security groups vs. NACLs", "Public/private tiers"],
+    sections: [
+      { id: "overview", label: "Overview" },
+      { id: "core-concepts", label: "Core Concepts" },
+      { id: "how-it-works", label: "How It Works" },
+      { id: "hands-on", label: "Hands-on" },
+      { id: "common-patterns", label: "Common Patterns" },
+      { id: "pitfalls-best-practices", label: "Pitfalls & Best Practices" },
+      { id: "pricing-limits", label: "Pricing & Limits" },
+      { id: "knowledge-checks", label: "Knowledge Checks & FAQ" },
+    ],
+  },
 };

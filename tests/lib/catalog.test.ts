@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  catalog,
   serviceMetas,
   getCategory,
   getServiceMeta,
@@ -19,11 +18,13 @@ describe("catalog integrity", () => {
     }
   });
 
-  it("marks exactly one service (iam) as available", () => {
-    const available = allCatalogServices().filter(
-      ({ service }) => service.status === "available",
-    );
-    expect(available.map(({ service }) => service.slug)).toEqual(["iam"]);
+  it("available services are exactly the ones with registry metadata", () => {
+    const available = allCatalogServices()
+      .filter(({ service }) => service.status === "available")
+      .map(({ service }) => service.slug)
+      .sort();
+    const authored = Object.keys(serviceMetas).sort();
+    expect(available).toEqual(authored);
   });
 
   it("every available service has registry metadata with a non-empty section list", () => {
