@@ -45,4 +45,23 @@ export const serviceMetas: Record<string, ServiceMeta> = {
       { id: "knowledge-checks", label: "Knowledge Checks & FAQ" },
     ],
   },
+  "api-gateway": {
+    slug: "api-gateway",
+    categorySlug: "networking",
+    title: "Amazon API Gateway",
+    description:
+      "The managed front door for your APIs: HTTP vs. REST vs. WebSocket, routes and integrations, stages, authorizers, throttling, and hands-on syntax for an HTTP API that proxies to Lambda.",
+    readingMinutes: 25,
+    concepts: ["HTTP vs REST APIs", "Routes & integrations", "Stages & deployment", "Authorizers & throttling"],
+    sections: [
+      { id: "overview", label: "Overview" },
+      { id: "core-concepts", label: "Core Concepts" },
+      { id: "how-it-works", label: "How It Works" },
+      { id: "hands-on", label: "Hands-on" },
+      { id: "common-patterns", label: "Common Patterns" },
+      { id: "pitfalls-best-practices", label: "Pitfalls & Best Practices" },
+      { id: "pricing-limits", label: "Pricing & Limits" },
+      { id: "knowledge-checks", label: "Knowledge Checks & FAQ" },
+    ],
+  },
 };

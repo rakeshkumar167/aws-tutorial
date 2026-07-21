@@ -6,11 +6,13 @@ import { serviceMetas } from "@/lib/service-registry";
 import { ServiceLayout } from "@/components/service/service-layout";
 import IamContent from "@/content/services/iam.mdx";
 import VpcContent from "@/content/services/vpc.mdx";
+import ApiGatewayContent from "@/content/services/api-gateway.mdx";
 
 /** Maps each authored service slug to its compiled MDX content component. */
 const content: Record<string, ComponentType> = {
   iam: IamContent,
   vpc: VpcContent,
+  "api-gateway": ApiGatewayContent,
 };
 
 // Fail the build loudly if a registered service has no renderable MDX component,

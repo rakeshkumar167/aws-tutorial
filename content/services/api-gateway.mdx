@@ -1,0 +1,327 @@
+<h2 id="overview">Overview</h2>
+
+Amazon **API Gateway** is a fully managed front door for your APIs. It accepts
+incoming HTTP (or WebSocket) requests at a public endpoint, then handles the
+cross-cutting work every API needs — **routing**, **authorization**,
+**throttling**, request/response **transformation**, and **monitoring** — before
+forwarding each request to a backend such as a **Lambda function**, another AWS
+service, or an HTTP server. You write the business logic; API Gateway runs the
+edge.
+
+API Gateway is **regional** and **serverless**: there are no servers to manage and
+you pay **per request** (plus data transfer), so an idle API costs nothing. It
+scales to the account's request limits automatically.
+
+<Callout variant="info" title="Three flavors, pick the right one">
+**HTTP API** — the modern default: cheaper, lower latency, simple JWT auth; best
+for most Lambda/HTTP backends. **REST API** — older and feature-rich: request
+validation, API keys/usage plans, per-method caching, WAF. **WebSocket API** —
+for stateful, two-way real-time connections. This tutorial uses an **HTTP API**.
+</Callout>
+
+<h2 id="core-concepts">Core Concepts</h2>
+
+<div className="not-prose my-6 grid gap-3 sm:grid-cols-2">
+  <ConceptCard term="Route / Method">What the client calls. On an **HTTP API** it's a route like `GET /hello`; on a **REST API** it's a *resource* (`/hello`) with an HTTP *method* (`GET`).</ConceptCard>
+  <ConceptCard term="Integration">Where the request goes: a **Lambda proxy**, an AWS service action, or an HTTP endpoint. *Proxy* integrations pass the raw request through and expect a shaped response back.</ConceptCard>
+  <ConceptCard term="Stage & deployment">A named, deployed snapshot of the API (`prod`, `dev`) with its own URL and settings. HTTP APIs can **auto-deploy** a `$default` stage; REST APIs need an explicit deployment.</ConceptCard>
+  <ConceptCard term="Authorizer">A gate that runs before the integration: a **JWT authorizer** (e.g. Cognito), a **Lambda authorizer** (custom logic), or **IAM** (SigV4-signed requests).</ConceptCard>
+</div>
+
+The biggest choice is **HTTP API vs. REST API**. HTTP APIs cover the common case
+— proxy to Lambda or HTTP, JWT auth, CORS — at lower cost and latency. REST APIs
+add request/response validation, API keys and **usage plans**, response
+**caching**, edge-optimized endpoints, and tighter WAF integration. Start with
+HTTP API and move up only when you need a REST-only feature.
+
+<Diagram caption="From client to backend">
+  <pre className="font-mono text-xs">{`Client ─HTTPS─▶ API Gateway (HTTP API)
+                 │  1. match route  GET /hello
+                 │  2. authorizer   (optional JWT/Lambda/IAM)
+                 │  3. throttle     (rate + burst limits)
+                 │  4. integration  ──▶ Lambda function
+                 ◀───────────────────  shaped response ({statusCode, body})`}</pre>
+</Diagram>
+
+<h2 id="how-it-works">How It Works</h2>
+
+When a request arrives, API Gateway processes it through a fixed pipeline:
+
+1. **Route matching.** The method + path (`GET /hello`) is matched to a route. No
+   match returns `404` (or falls through to a `$default` route if you define one).
+2. **Authorization.** If the route has an authorizer, it runs first. A failed JWT
+   or a denying Lambda authorizer short-circuits with `401`/`403` — the
+   integration never runs.
+3. **Throttling.** The request is checked against account- and stage-level **rate**
+   and **burst** limits; excess requests get `429 Too Many Requests`.
+4. **Integration.** API Gateway invokes the backend. With a **Lambda proxy**
+   integration it sends a structured event (path, headers, query, body) and
+   expects a response object of the form `{ statusCode, headers, body }`.
+5. **Response.** That object is turned back into the HTTP response to the client.
+
+<Callout variant="info" title="Proxy vs. non-proxy integration">
+With a **proxy** integration your Lambda owns the full HTTP response — return
+`{ statusCode: 200, body: JSON.stringify(...) }` yourself. With a **non-proxy**
+integration you configure mapping templates and API Gateway builds the response.
+Proxy is simpler and by far the most common; reach for non-proxy only when you
+need to reshape requests/responses without touching backend code.
+</Callout>
+
+<h2 id="hands-on">Hands-on</h2>
+
+The task below creates an **HTTP API** with a `GET /hello` route that proxies to a
+**Lambda function**, auto-deployed on the `$default` stage. It assumes the Lambda
+function `hello` already exists, and adds the resource-based permission API Gateway
+needs to invoke it. The same task is shown across the AWS CLI, the AWS SDK for
+JavaScript v3 (TypeScript), the AWS SDK for Python (boto3), and CloudFormation.
+
+<CodeTabs tabs={[
+  {
+    label: "AWS CLI",
+    language: "bash",
+    code: `REGION=us-east-1
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LAMBDA_ARN="arn:aws:lambda:$REGION:$ACCOUNT_ID:function:hello"
+
+# 1. Create the HTTP API (auto-deploys a $default stage)
+API_ID=$(aws apigatewayv2 create-api \\
+  --name hello-http-api \\
+  --protocol-type HTTP \\
+  --query ApiId --output text)
+
+# 2. Lambda proxy integration (payload format 2.0)
+INTEG_ID=$(aws apigatewayv2 create-integration \\
+  --api-id "$API_ID" \\
+  --integration-type AWS_PROXY \\
+  --integration-uri "$LAMBDA_ARN" \\
+  --payload-format-version 2.0 \\
+  --query IntegrationId --output text)
+
+# 3. Route GET /hello -> integration
+aws apigatewayv2 create-route \\
+  --api-id "$API_ID" \\
+  --route-key 'GET /hello' \\
+  --target "integrations/$INTEG_ID"
+
+# 4. Let API Gateway invoke the function
+aws lambda add-permission \\
+  --function-name hello \\
+  --statement-id apigw-invoke \\
+  --action lambda:InvokeFunction \\
+  --principal apigateway.amazonaws.com \\
+  --source-arn "arn:aws:execute-api:$REGION:$ACCOUNT_ID:$API_ID/*/*/hello"
+
+echo "https://$API_ID.execute-api.$REGION.amazonaws.com/hello"`
+  },
+  {
+    label: "TypeScript (SDK v3)",
+    language: "ts",
+    code: `import {
+  ApiGatewayV2Client,
+  CreateApiCommand,
+  CreateIntegrationCommand,
+  CreateRouteCommand,
+} from "@aws-sdk/client-apigatewayv2";
+import { LambdaClient, AddPermissionCommand } from "@aws-sdk/client-lambda";
+
+const region = "us-east-1";
+const accountId = "111122223333";
+const lambdaArn = \`arn:aws:lambda:\${region}:\${accountId}:function:hello\`;
+
+const apigw = new ApiGatewayV2Client({ region });
+const lambda = new LambdaClient({ region });
+
+// 1. HTTP API (auto-deploys $default stage)
+const { ApiId } = await apigw.send(new CreateApiCommand({
+  Name: "hello-http-api",
+  ProtocolType: "HTTP",
+}));
+
+// 2. Lambda proxy integration
+const { IntegrationId } = await apigw.send(new CreateIntegrationCommand({
+  ApiId,
+  IntegrationType: "AWS_PROXY",
+  IntegrationUri: lambdaArn,
+  PayloadFormatVersion: "2.0",
+}));
+
+// 3. Route GET /hello -> integration
+await apigw.send(new CreateRouteCommand({
+  ApiId,
+  RouteKey: "GET /hello",
+  Target: \`integrations/\${IntegrationId}\`,
+}));
+
+// 4. Permission for API Gateway to invoke the function
+await lambda.send(new AddPermissionCommand({
+  FunctionName: "hello",
+  StatementId: "apigw-invoke",
+  Action: "lambda:InvokeFunction",
+  Principal: "apigateway.amazonaws.com",
+  SourceArn: \`arn:aws:execute-api:\${region}:\${accountId}:\${ApiId}/*/*/hello\`,
+}));
+
+console.log(\`https://\${ApiId}.execute-api.\${region}.amazonaws.com/hello\`);`
+  },
+  {
+    label: "Python (boto3)",
+    language: "python",
+    code: `import boto3
+
+region = "us-east-1"
+account_id = boto3.client("sts").get_caller_identity()["Account"]
+lambda_arn = f"arn:aws:lambda:{region}:{account_id}:function:hello"
+
+apigw = boto3.client("apigatewayv2", region_name=region)
+lambda_client = boto3.client("lambda", region_name=region)
+
+# 1. HTTP API (auto-deploys $default stage)
+api_id = apigw.create_api(Name="hello-http-api", ProtocolType="HTTP")["ApiId"]
+
+# 2. Lambda proxy integration
+integ_id = apigw.create_integration(
+    ApiId=api_id,
+    IntegrationType="AWS_PROXY",
+    IntegrationUri=lambda_arn,
+    PayloadFormatVersion="2.0",
+)["IntegrationId"]
+
+# 3. Route GET /hello -> integration
+apigw.create_route(
+    ApiId=api_id,
+    RouteKey="GET /hello",
+    Target=f"integrations/{integ_id}",
+)
+
+# 4. Permission for API Gateway to invoke the function
+lambda_client.add_permission(
+    FunctionName="hello",
+    StatementId="apigw-invoke",
+    Action="lambda:InvokeFunction",
+    Principal="apigateway.amazonaws.com",
+    SourceArn=f"arn:aws:execute-api:{region}:{account_id}:{api_id}/*/*/hello",
+)
+
+print(f"https://{api_id}.execute-api.{region}.amazonaws.com/hello")`
+  },
+  {
+    label: "CloudFormation",
+    language: "yaml",
+    code: `Parameters:
+  HelloFunctionArn:
+    Type: String
+    Description: ARN of the existing "hello" Lambda function
+
+Resources:
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: hello-http-api
+      ProtocolType: HTTP
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Ref HelloFunctionArn
+      PayloadFormatVersion: "2.0"
+
+  Route:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /hello"
+      Target: !Sub "integrations/\${Integration}"
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HelloFunctionArn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:\${AWS::Region}:\${AWS::AccountId}:\${HttpApi}/*/*/hello"
+
+Outputs:
+  Url:
+    Value: !Sub "https://\${HttpApi}.execute-api.\${AWS::Region}.amazonaws.com/hello"`
+  }
+]} />
+
+<Callout variant="tip" title="The proxy response shape">
+A Lambda behind a proxy integration must return the HTTP response itself, e.g.
+`{ "statusCode": 200, "headers": { "content-type": "application/json" }, "body": "{\\"msg\\":\\"hi\\"}" }`.
+Forgetting `statusCode`, or returning a raw object instead of a stringified
+`body`, is the most common cause of `502 Bad Gateway`.
+</Callout>
+
+<h2 id="common-patterns">Common Patterns</h2>
+
+- **Serverless microservices.** Route each path to a Lambda proxy integration —
+  `GET /orders`, `POST /orders`, `GET /orders/{id}` — for a fully serverless API
+  with no servers to run.
+- **JWT / Cognito auth.** Attach a JWT authorizer that validates tokens from a
+  Cognito user pool (or any OIDC issuer) and protect routes by scope, so the
+  integration only runs for authenticated callers.
+- **Custom domains.** Map `api.example.com` (with an ACM certificate) to one or
+  more APIs via base-path mapping, instead of exposing the raw
+  `execute-api` URL.
+- **Throttling & usage plans (REST).** Issue **API keys** and attach **usage
+  plans** to meter and rate-limit third-party consumers per key.
+- **Private backends.** Use a **VPC Link** to route to internal ALBs/NLBs or
+  services running in a private VPC without exposing them publicly.
+
+<h2 id="pitfalls-best-practices">Pitfalls & Best Practices</h2>
+
+- **Return the right proxy shape.** For proxy integrations, respond with
+  `{ statusCode, headers, body }` and a **string** `body`; anything else yields
+  `502`.
+- **Don't forget the invoke permission.** API Gateway needs a resource-based
+  `lambda:InvokeFunction` permission (with a `SourceArn` scoped to the API) or
+  calls fail with `500`/`Internal server error`.
+- **Know your stages.** REST APIs require an explicit **deployment** to a stage —
+  changes aren't live until you deploy. HTTP APIs can `AutoDeploy` the `$default`
+  stage; forgetting to deploy is a classic "why is my change not showing" bug.
+- **Enable CORS for browsers.** Cross-origin browser calls need CORS configured on
+  the API (and correct headers on `OPTIONS` preflight), not just on the backend.
+- **Mind the 29-second timeout.** Integrations must respond within **29 seconds**;
+  long-running work should be made async (return `202`, process via a queue).
+
+<h2 id="pricing-limits">Pricing & Limits</h2>
+
+You pay **per request** with no idle cost. **HTTP APIs** are cheaper than **REST
+APIs** (roughly a third the per-request price) and lower latency; REST adds
+optional **caching** (billed hourly by cache size) and features like API keys and
+request validation. Key defaults (many raiseable via Service Quotas): an
+account-level throttle of **10,000 requests/second** with a **5,000 burst**, a
+**29-second** integration timeout, a **10 MB** payload limit for REST APIs
+(**10 MB** request / streamed responses for HTTP APIs), and **300
+routes/resources** per API. Data transfer out is billed separately.
+
+<h2 id="knowledge-checks">Knowledge Checks & FAQ</h2>
+
+**HTTP API or REST API — which should I pick?** Start with **HTTP API**: it's
+cheaper, faster, and covers Lambda/HTTP proxying, JWT auth, and CORS. Move to
+**REST API** only when you need a REST-only feature such as API keys/usage plans,
+request validation, response caching, or edge-optimized endpoints.
+
+**What is a proxy integration?** An integration that passes the raw request
+straight to the backend and expects the backend to return the full HTTP response
+(`{ statusCode, headers, body }`). It's the simplest and most common way to wire
+API Gateway to Lambda.
+
+**Why does API Gateway need a permission to call my Lambda?** Invoking a function
+is a privileged action. You grant it with a **resource-based policy** on the
+Lambda (`lambda:InvokeFunction` for the `apigateway.amazonaws.com` principal),
+scoped by `SourceArn` to your specific API so nothing else can trigger it.
+
+**Is API Gateway regional?** Yes — an API lives in one region. You can front it
+with a custom domain and CloudFront (or a REST **edge-optimized** endpoint) to
+serve clients closer to the edge, but the API itself is regional.

@@ -45,7 +45,12 @@ export const catalog: readonly ServiceCategory[] = [
       },
       soon("route-53", "Route 53", "DNS, routing policies"),
       soon("cloudfront", "CloudFront", "CDN, edge caching"),
-      soon("api-gateway", "API Gateway", "REST/HTTP APIs, throttling"),
+      {
+        slug: "api-gateway",
+        title: "API Gateway",
+        blurb: "REST/HTTP APIs, throttling",
+        status: "available",
+      },
       soon("elb", "Elastic Load Balancing", "ALB, NLB, GLB"),
     ],
   },
